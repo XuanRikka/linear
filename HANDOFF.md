@@ -291,7 +291,13 @@ src/main/java/org/linear/
 StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运行时冒烟（加载 linear 世界、
 跨区域移动、存盘重启、确认无 .mca 新增）。
 
-**建议措施（均未实施，用户暂缓）**：
+**已实施（2026-07-27）**：一刀切硬守卫——fabric.mod.json `breaks: {"c2me": "*"}`
+（Fabric 启动前弹窗拒绝）+ `Linear.onInitialize()` 运行时兜底抛 IllegalStateException
+（防 loader 参数绕过）。检测到 C2ME 一律拒绝启动，不区分其配置。后续如需放宽为
+"replaceImpl=false 可共存"的精确守卫，撤掉 breaks、把兜底检查改为解析 c2me.toml 即可
+（见下方建议 1/2）。
+
+**其余建议措施（未实施）**：
 1. 启动守卫：检测 c2me 加载且 replaceImpl=true（反射 ModuleEntryPoint#enabled 或解析
    c2me.toml）→ 抛致命错误拒绝进世界，信息写明两条出路（关 replaceImpl / 纯 anvil 世界）。
 2. 廉价加固（与 C2ME 无关也值得做）：linear$flush/linear$close 改为仅当 linear$cache != null
