@@ -36,11 +36,8 @@ java -cp "$CP" Xval expectv1error <v1文件>          # 验证 linear v1 报清�
 java -cp "$CP" Xval flushtest <目标文件>            # V2 周期落盘端到端（约 6~15s）
 ```
 
-交叉验证套路（基准数据在 `linear-tools-rs/test/world_linear/region/`）：
-Java `copy` 写出 → Rust CLI 转换 → Java `dump` 比对摘要，双向都做。
-⚠ CLI 输入只认 `.mca`/`.linear` 扩展名，`.b_linear` 要改名成 `.linear` 再喂
-（按魔数识别，改名无害）。⚠ linear-tools-rs HEAD 有两个读取端 bug
-（见 HANDOFF.md 第七节），需打补丁后使用；该仓库为只读参考，补丁不入库。
+交叉验证套路：Java `copy` 写出 → 用格式转换工具转换 → Java `dump` 比对摘要，双向都做。
+（`linear-tools-rs` 是独立的参考项目，不属于本仓库。）
 
 ### xxhash 对拍
 
