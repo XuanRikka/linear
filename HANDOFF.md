@@ -33,8 +33,10 @@ src/main/java/org/linear/
         └── ByteBufferInputStream.java   # ByteBuffer → InputStream
 ```
 
-配置项：`format`（linearv2|bufferedlinearv3）、`compression-level`（1-22，默认 3）、
-`grid-size`（1/2/4/8/16/32，默认 8，仅 v2）、`v3-flush-delay-seconds`（默认 5）、`v3-flush-threads`。
+配置项：`format`（linearv2|bufferedlinearv3|anvil，别名 mca —— anvil 表示新区域用原版 .mca，
+已有 linear 文件仍按魔数识别读写）、`compression-level`（1-22，默认 3）、
+`grid-size`（1/2/4/8/16/32，默认 8，仅 v2）、`v2-flush-interval-seconds`（默认 60，0=禁用，
+周期落盘兜底）、`v3-flush-delay-seconds`（默认 5）、`v3-flush-threads`。
 
 `ZstdUtil` 用到的 zstd-jni API（桩/依赖需覆盖这些）：
 `ZstdCompressCtx.setLevel/setChecksum/compress(byte[])`、`Zstd.decompress(byte[], int)`、
@@ -260,7 +262,44 @@ src/main/java/org/linear/
    deserialize_bucket_header 的 `grid_size * grid_size` 在 i8 上溢出（grid≥16 回绕成 0，
    读出 0 个 bucket）。交叉验证是在打了修复补丁的 CLI 上做的（**补丁未提交**，
    linear-tools-rs 保持原样；补丁内容见上述两处描述，很容易重打）。
-2. **LinearV2 落盘时机**：全内存实现只在 storage flush/close 时写盘，游戏内 Esc 暂停存档
-   不触发，只有退出世界/完整 save-all 才写。V2 配置下崩溃会丢上次完整存档后的改动
-   （V3 有 5s 后台 flusher 无此问题）。可考虑后续给 V2 加周期 flush 兜底。
+2. **LinearV2 落盘时机**（已解决）：全内存实现只在 storage flush/close 时写盘，游戏内
+   Esc 暂停存档不触发。已加 `LinearV2Flusher` 周期落盘兜底（`v2-flush-interval-seconds`，
+   默认 60s，0=禁用回旧行为），端到端验证通过（写入不 close，6.2s 后台落盘且内容一致）。
+   后续对抗审查修了三处并发/健壮性问题：`closed` 标志防 close 失败后陈旧引用与新实例
+   并发写盘；save 改锁内快照+锁外压缩写盘（不再阻塞游戏 IO）；失败恢复 dirty 改 catch
+   Throwable（zstd-jni 抛 RuntimeException，只 catch IOException 会静默丢数据）。
 3. `gradle.properties` 的 `mod_version=v1.0.0` 非 SemVer（带 v 前缀），Fabric Loader 会 WARN。
+
+## 八、C2ME 兼容性分析结论（2026-07-26，对照本地源码 C2ME 0.4.2-alpha.0 / MC 26.2）
+
+**默认配置下不兼容，且是双向静默破坏**（启动不报错、日志无异常，属最危险形态）：
+
+- C2ME 的 `c2me-rewrites-chunkio`（config `ioSystem.replaceImpl`，**默认 true**）用 @Redirect
+  把 region 的 StorageIoWorker 换成自建 C2MEStorageThread，经 @Invoker 直呼**私有**
+  `getRegionFile` + `RegionFile.getChunkInputStream/invokeWriteChunk` 读写 .mca——完全绕过
+  我们拦截的 5 个公开方法。后果：已有 linear 世界的区域被视为空 → **地形静默重生成**、
+  新数据全写 .mca；而 entities/poi 的 StorageIoWorker 构造不在其 @Redirect 范围内仍走我们
+  → **同一世界 region=.mca、entities/poi=linear 的裂脑存档**。
+- 反向破坏：C2MEStorageThread 仅有的公开 API 调用是 `storage.sync()`/`storage.close()`，
+  被我们 linear$flush/linear$close 无条件 HEAD-cancel（其实例的 linear$cache 恒为 null）
+  → C2ME 的 RegionFile **永不 fsync/close**（句柄泄漏、崩溃时 .mca 损坏风险升高）。
+- 次级路径：`c2me-base` 的 IDirectStorage 原始字节直写同样经私有 getRegionFile 绕过 write，
+  但仅 `ioSystem.gcFreeChunkSerializer=true` 时激活（**默认 false**）。
+
+**兼容组合**（静态判定 compatible）：c2me.toml 设 `ioSystem.replaceImpl=false` 且保持
+`gcFreeChunkSerializer=false`——此时 3 个 chunkio mixin 整体不应用，IO 回到原版
+StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运行时冒烟（加载 linear 世界、
+跨区域移动、存盘重启、确认无 .mca 新增）。
+
+**建议措施（均未实施，用户暂缓）**：
+1. 启动守卫：检测 c2me 加载且 replaceImpl=true（反射 ModuleEntryPoint#enabled 或解析
+   c2me.toml）→ 抛致命错误拒绝进世界，信息写明两条出路（关 replaceImpl / 纯 anvil 世界）。
+2. 廉价加固（与 C2ME 无关也值得做）：linear$flush/linear$close 改为仅当 linear$cache != null
+   时才 cancel——我们没服务过的 RegionFileStorage 实例（如 C2ME 私建的）回落原版行为，
+   反向破坏即消失。
+3. mixin priority 无用：双方注入的类/方法零重叠，不要浪费时间调。
+4. 长期（中等工程）：C2ME 存在时把格式替换下沉到 RegionFile 层（私有 getRegionFile 返回
+   linear 后端的 RegionFile 子类，满足 getChunkInputStream/invokeWriteChunk/delete/
+   getCompressionFormat 语义），linear 格式与 C2ME 优化可同时生效。
+5. `format=anvil` 的纯 .mca 世界 + C2ME：结果正确（C2ME 自己写 .mca 正是所需），
+   我们的 mod 自动让位，C2ME 全部优化保留。

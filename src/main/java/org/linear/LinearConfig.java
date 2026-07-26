@@ -21,7 +21,9 @@ public final class LinearConfig {
 
     public enum Format {
         LINEAR_V2("linearv2"),
-        BUFFERED_LINEAR_V3("bufferedlinearv3");
+        BUFFERED_LINEAR_V3("bufferedlinearv3"),
+        /** 原版 .mca：新区域走原版 RegionFile，已有 linear 文件仍按魔数识别继续读写。 */
+        ANVIL("anvil");
 
         public final String id;
 
@@ -30,6 +32,9 @@ public final class LinearConfig {
         }
 
         static Format byId(String id) {
+            if ("mca".equalsIgnoreCase(id)) {
+                return ANVIL; // 常用别名
+            }
             for (Format f : values()) {
                 if (f.id.equalsIgnoreCase(id)) {
                     return f;
@@ -163,7 +168,9 @@ public final class LinearConfig {
             "# format: 写入新区域文件时使用的格式，可选：",
             "#   bufferedlinearv3  —— .b_linear，16 bucket 独立 zstd 压缩 + 懒加载 + swap 缓冲（默认）",
             "#   linearv2          —— .linear，xymb LinearV2，整文件按 grid 分桶 zstd 压缩",
-            "# 已存在的区域文件按内容自动识别格式读取，与该项无关。",
+            "#   anvil（别名 mca） —— 原版 .mca 格式；装着本 mod 也可以继续用原版存储",
+            "# 已存在的区域文件一律按文件内容自动识别格式读取，与该项无关：",
+            "# 例如切到 anvil 后，之前生成的 .linear/.b_linear 区域照常读写，只有全新区域用 .mca。",
             "format=bufferedlinearv3",
             "",
             "# zstd 压缩等级（1-22），影响两种格式的 master 文件。",
@@ -171,6 +178,11 @@ public final class LinearConfig {
             "",
             "# LinearV2 专用：分桶网格大小，允许 1/2/4/8/16/32。1 压缩率最高，32 最低。",
             "grid-size=8",
+            "",
+            "# LinearV2 专用：有未落盘修改的区域文件多久写盘一次（秒），崩溃时最多丢这么久的改动。",
+            "# 每次写盘是整文件重写，不宜太小（允许 5-3600）；没有修改的文件不会被写。0 = 禁用，",
+            "# 禁用后回到只在退出世界时落盘的旧行为。",
+            "v2-flush-interval-seconds=60",
             "",
             "# BufferedLinearV3 专用：最后一次写入静默多少秒后，后台线程把脏 bucket 同步进 master 文件。",
             "v3-flush-delay-seconds=5",

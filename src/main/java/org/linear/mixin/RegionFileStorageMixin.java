@@ -15,6 +15,7 @@ import org.linear.LinearConfig;
 import org.linear.storage.BufferedLinearFlusher;
 import org.linear.storage.BufferedLinearV3RegionFile;
 import org.linear.storage.IRegionFile;
+import org.linear.storage.LinearV2Flusher;
 import org.linear.storage.LinearV2RegionFile;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -40,8 +41,8 @@ import java.util.Map;
  * 接管 {@link RegionFileStorage} 的全部五个公开 IO 方法（read / scanChunk / write / flush / close）。
  * region、entities、poi 的 IO 全部经 IOWorker 走这五个方法，因此一个 mixin 覆盖三者。
  * <p>
- * 区域文件解析顺序：配置格式的文件 → 另一种 linear 文件 → {@code .mca}（原版兜底 + 提示转换）
- * → 按配置格式新建。
+ * 区域文件解析顺序：配置格式的文件 → 另一种 linear 文件 → {@code .mca}（配置 anvil 时为正常路径，
+ * 否则原版兜底 + 提示转换）→ 按配置格式新建（anvil 即原版 RegionFile）。
  */
 @Mixin(RegionFileStorage.class)
 public abstract class RegionFileStorageMixin {
@@ -100,19 +101,22 @@ public abstract class RegionFileStorageMixin {
             // 两种都在时按配置格式优先
             final boolean preferV2 = config.format == LinearConfig.Format.LINEAR_V2;
             if (v2Exists && (preferV2 || !v3Exists)) {
-                result = new LinearV2RegionFile(v2Path, regionX, regionZ, config);
+                result = new LinearV2RegionFile(v2Path, regionX, regionZ, config, LinearV2Flusher.get());
             } else {
                 result = new BufferedLinearV3RegionFile(v3Path, config, BufferedLinearFlusher.get());
             }
         } else {
             final Path mcaPath = this.folder.resolve(baseName + "mca");
-            if (Files.isRegularFile(mcaPath)) {
-                // 混合世界安全兜底：只有 .mca 时回落原版读写，避免静默丢档
-                linear$LOGGER.warn("{} 只有 .mca 文件，本区域回落原版格式读写；建议用 linear-tools-rs 转换为 linear 格式",
-                        mcaPath);
+            final boolean anvilConfigured = config.format == LinearConfig.Format.ANVIL;
+            if (Files.isRegularFile(mcaPath) || anvilConfigured) {
+                if (!anvilConfigured) {
+                    // 混合世界安全兜底：只有 .mca 时回落原版读写，避免静默丢档
+                    linear$LOGGER.warn("{} 只有 .mca 文件，本区域回落原版格式读写；建议用 linear-tools-rs 转换为 linear 格式",
+                            mcaPath);
+                }
                 result = (IRegionFile) (Object) new RegionFile(this.info, mcaPath, this.folder, this.sync);
             } else if (config.format == LinearConfig.Format.LINEAR_V2) {
-                result = new LinearV2RegionFile(v2Path, regionX, regionZ, config);
+                result = new LinearV2RegionFile(v2Path, regionX, regionZ, config, LinearV2Flusher.get());
             } else {
                 result = new BufferedLinearV3RegionFile(v3Path, config, BufferedLinearFlusher.get());
             }

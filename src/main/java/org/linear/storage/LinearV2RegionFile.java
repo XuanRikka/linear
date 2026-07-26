@@ -25,7 +25,9 @@ import java.util.Map;
  * LinearV2（xymb 格式，{@code r.X.Z.linear}）区域文件。
  * <p>
  * 全部数据驻留内存：打开时整文件解析，{@link #flush()} / {@link #close()} 时若有修改
- * 则整文件重新序列化（先写 {@code .tmp} 再原子替换）。
+ * 则整文件重新序列化（先写 {@code .tmp} 再原子替换）。游戏内暂停存档不会触发
+ * {@code RegionFileStorage.flush}，因此另有 {@link LinearV2Flusher} 做周期性落盘兜底：
+ * 持续脏超过 {@code v2-flush-interval-seconds} 的文件由后台线程调 {@link #flush()}。
  * <p>
  * 格式事实（与 linear-tools-rs 对齐，全部大端）：
  * <ul>
@@ -47,18 +49,31 @@ public final class LinearV2RegionFile implements IRegionFile {
     private final int regionX;
     private final int regionZ;
     private final LinearConfig config;
+    private final LinearV2Flusher flusher;
 
     private final Object lock = new Object();
     private final byte[][] chunks = new byte[1024][];
     private final long[] timestamps = new long[1024];
     private final Map<String, Integer> nbtFeatures = new LinkedHashMap<>();
     private boolean dirty;
+    /** dirty 首次置位的 nanoTime，用于周期 flush 判断脏龄；只在 dirty 为 true 时有意义。 */
+    private long dirtySinceNanos;
+    /**
+     * {@link #close()} 后置位（lock 保护）。周期 flush 见 closed 即跳过：close 时 flush 失败的话
+     * dirty 会保留，若无此标志，后台线程的陈旧引用可能与 LRU 逐出后新建的同路径实例并发写同一
+     * {@code .tmp}，导致文件损坏或数据回退（对照 BufferedLinearV3RegionFile 的 closed 防护）。
+     */
+    private boolean closed;
+    /** 串行化并发 save：快照与磁盘写入在此锁内配对，保证后拍的快照后落盘，防止旧快照回退新数据。 */
+    private final Object saveLock = new Object();
 
-    public LinearV2RegionFile(Path path, int regionX, int regionZ, LinearConfig config) throws IOException {
+    public LinearV2RegionFile(Path path, int regionX, int regionZ, LinearConfig config,
+                              LinearV2Flusher flusher) throws IOException {
         this.path = path;
         this.regionX = regionX;
         this.regionZ = regionZ;
         this.config = config;
+        this.flusher = flusher;
 
         if (Files.isRegularFile(path) && Files.size(path) > 0) {
             try {
@@ -67,6 +82,8 @@ public final class LinearV2RegionFile implements IRegionFile {
                 throw new IOException("linear 文件截断或损坏: " + path, e);
             }
         }
+
+        flusher.addFile(this);
     }
 
     private static int chunkIndex(ChunkPos pos) {
@@ -175,7 +192,9 @@ public final class LinearV2RegionFile implements IRegionFile {
 
     // ---------------------------------------------------------------- 保存
 
-    private byte[] serialize() throws IOException {
+    /** 从快照序列化，不读实例可变字段；调用方无需持有 {@link #lock}。 */
+    private byte[] serialize(byte[][] chunks, long[] timestamps, Map<String, Integer> nbtFeatures)
+            throws IOException {
         final int grid = this.config.gridSize;
         final int cpb = 32 / grid;
         final int level = this.config.compressionLevel;
@@ -188,13 +207,13 @@ public final class LinearV2RegionFile implements IRegionFile {
                 for (int ix = 0; ix < cpb; ix++) {
                     for (int iz = 0; iz < cpb; iz++) {
                         final int idx = (bx * cpb + ix) + (bz * cpb + iz) * 32;
-                        final byte[] data = this.chunks[idx];
+                        final byte[] data = chunks[idx];
                         if (data == null) {
                             raw.writeInt(0);
-                            raw.writeLong(this.timestamps[idx]);
+                            raw.writeLong(timestamps[idx]);
                         } else {
                             raw.writeInt(data.length + 8);
-                            raw.writeLong(this.timestamps[idx]);
+                            raw.writeLong(timestamps[idx]);
                             raw.write(data);
                         }
                     }
@@ -204,13 +223,13 @@ public final class LinearV2RegionFile implements IRegionFile {
         }
 
         long newestTimestamp = 0;
-        for (final long ts : this.timestamps) {
+        for (final long ts : timestamps) {
             newestTimestamp = Math.max(newestTimestamp, ts);
         }
 
         final byte[] bitmap = new byte[128];
         for (int i = 0; i < 1024; i++) {
-            if (this.chunks[i] != null) {
+            if (chunks[i] != null) {
                 bitmap[i >> 3] |= (byte) (1 << (7 - (i & 7)));
             }
         }
@@ -225,7 +244,7 @@ public final class LinearV2RegionFile implements IRegionFile {
         out.writeInt(this.regionZ);
         out.write(bitmap);
 
-        for (final Map.Entry<String, Integer> feature : this.nbtFeatures.entrySet()) {
+        for (final Map.Entry<String, Integer> feature : nbtFeatures.entrySet()) {
             final byte[] keyBytes = feature.getKey().getBytes(StandardCharsets.UTF_8);
             if (keyBytes.length == 0 || keyBytes.length > 255) {
                 throw new IOException("nbt feature 键长度非法: " + feature.getKey());
@@ -249,8 +268,40 @@ public final class LinearV2RegionFile implements IRegionFile {
         return fileBuf.toByteArray();
     }
 
-    private void save() throws IOException {
-        final byte[] fileBytes = this.serialize();
+    /**
+     * 有脏数据则落盘：{@link #lock} 内浅拷贝快照（chunk 的 byte[] 存入后从不原地修改）并清 dirty，
+     * 锁外序列化 + zstd 压缩 + 写盘——整文件重写期间不再阻塞游戏 IO 线程对本区域的读写。
+     * {@link #saveLock} 串行化并发 save，保证后拍的快照后落盘。写盘失败时恢复 dirty，
+     * 内存数据保留等待下次重试。
+     */
+    private void flushImpl() throws IOException {
+        synchronized (this.saveLock) {
+            final byte[][] chunksSnapshot;
+            final long[] timestampsSnapshot;
+            final Map<String, Integer> featuresSnapshot;
+            synchronized (this.lock) {
+                if (!this.dirty || this.closed) {
+                    return;
+                }
+                chunksSnapshot = this.chunks.clone();
+                timestampsSnapshot = this.timestamps.clone();
+                featuresSnapshot = new LinkedHashMap<>(this.nbtFeatures);
+                this.dirty = false;
+            }
+            try {
+                this.save(this.serialize(chunksSnapshot, timestampsSnapshot, featuresSnapshot));
+            } catch (Throwable t) {
+                // 必须捕获 Throwable：zstd-jni 抛 ZstdException（RuntimeException）、大区域序列化
+                // 可能 OOME——任何失败都要恢复 dirty，否则内存改动被当成已落盘，close 时静默丢失
+                synchronized (this.lock) {
+                    this.markDirtyLocked();
+                }
+                throw t;
+            }
+        }
+    }
+
+    private void save(byte[] fileBytes) throws IOException {
         final Path tmp = Path.of(this.path + ".tmp");
 
         try (FileChannel channel = FileChannel.open(tmp,
@@ -273,8 +324,30 @@ public final class LinearV2RegionFile implements IRegionFile {
                 throw new IOException("替换 " + this.path + " 失败", e);
             }
         }
+    }
 
-        this.dirty = false;
+    // ---------------------------------------------------------------- 脏标记
+
+    /** 调用方必须持有 {@link #lock}。首次置脏时记录脏龄起点，供周期 flush 判断。 */
+    private void markDirtyLocked() {
+        if (!this.dirty) {
+            this.dirty = true;
+            this.dirtySinceNanos = System.nanoTime();
+        }
+    }
+
+    /** 供 {@link LinearV2Flusher} 调用：是否已持续脏超过 {@code intervalNanos}（已 close 的一律 false）。 */
+    boolean isDirtyLongerThan(long now, long intervalNanos) {
+        synchronized (this.lock) {
+            return !this.closed && this.dirty && now - this.dirtySinceNanos >= intervalNanos;
+        }
+    }
+
+    /** 供 {@link LinearV2Flusher} 调用：flush 失败后重置脏龄，等满一个周期再重试。 */
+    void postponePeriodicFlush() {
+        synchronized (this.lock) {
+            this.dirtySinceNanos = System.nanoTime();
+        }
     }
 
     // ---------------------------------------------------------------- IRegionFile
@@ -320,22 +393,32 @@ public final class LinearV2RegionFile implements IRegionFile {
         synchronized (this.lock) {
             this.chunks[idx] = null;
             this.timestamps[idx] = 0;
-            this.dirty = true;
+            this.markDirtyLocked();
         }
     }
 
     @Override
     public void flush() throws IOException {
-        synchronized (this.lock) {
-            if (this.dirty) {
-                this.save();
-            }
-        }
+        this.flushImpl();
     }
 
     @Override
     public void close() throws IOException {
-        this.flush();
+        try {
+            synchronized (this.saveLock) {
+                try {
+                    this.flushImpl();
+                } finally {
+                    // flush 失败也必须置位：否则 dirty 残留 + 后台线程的陈旧引用
+                    // 会与本路径的新实例并发写盘（见 closed 字段注释）
+                    synchronized (this.lock) {
+                        this.closed = true;
+                    }
+                }
+            }
+        } finally {
+            this.flusher.removeFile(this);
+        }
     }
 
     private final class ChunkBuffer extends ByteArrayOutputStream {
@@ -350,7 +433,7 @@ public final class LinearV2RegionFile implements IRegionFile {
             synchronized (LinearV2RegionFile.this.lock) {
                 LinearV2RegionFile.this.chunks[this.idx] = this.toByteArray();
                 LinearV2RegionFile.this.timestamps[this.idx] = System.currentTimeMillis() / 1000L;
-                LinearV2RegionFile.this.dirty = true;
+                LinearV2RegionFile.this.markDirtyLocked();
             }
         }
     }
