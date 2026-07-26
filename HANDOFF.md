@@ -298,8 +298,18 @@ StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运�
 两个模块，字段均名 enabled，类加载即含默认值语义；ClassNotFound = 模块未分发 = 安全）→
 失败回落自带的极简 TOML 解析（严格小写布尔，非法值返回 null）→ 均失败 fail-closed 拒启。
 解析器 12 项边界测试全过（scratchpad GuardTest）。曾短暂采用 breaks 一刀切（15f6441），
-已按用户决定放宽。⚠ 未做装真 C2ME 的运行时冒烟（build C2ME jar 放 mods 验证三态：
-兼容配置放行/危险配置拦截/反射失败回落），发布前建议补。
+已按用户决定放宽。
+
+**运行时冒烟已完成（2026-07-27，真 C2ME 0.4.2-alpha.0.27 jar 放 run/mods）**：
+- 危险态（无 c2me.toml，全默认）→ mod 初始化即被守卫拦截崩溃，crash report 内含
+  中文指引，窗口未打开；C2ME 首次加载会自动生成 c2me.toml ✅
+- 兼容态（replaceImpl=false）→ INFO"正常共存"，游戏正常启动 ✅
+- 共存实测：进入混合格式世界（.linear + .b_linear）游玩，C2ME 各模块正常工作
+  （日志 51 处活动），全程零 .mca 生成、零存储错误、退出无 .swp/.tmp 残留，
+  区域文件事后 harness 复读通过（930/1024 chunks）✅
+- 反射失败回落路径无法用真 jar 触发（其字段必然存在），由 GuardTest 单测覆盖，可接受。
+  注：其 mods 目录常见伴生 jar c2me-opts-accel-opencl 未参与测试（纯 worldgen 加速，
+  不碰 chunk IO）。测试后 c2me.jar 已移出 run/mods 恢复干净开发环境。
 
 **其余建议措施（未实施）**：
 1. 启动守卫：检测 c2me 加载且 replaceImpl=true（反射 ModuleEntryPoint#enabled 或解析
