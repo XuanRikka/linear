@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "linear",
+  "version": "${version}",
+  "name": "linear",
+  "description": "Linear region file formats (LinearV2 / BufferedLinearV3) for region, entities and poi storage.",
+  "authors": [],
+  "contact": {},
+  "license": "MIT",
+  "icon": "assets/linear/icon.png",
+  "environment": "*",
+  "entrypoints": {
+    "fabric-datagen": [
+      "org.linear.client.LinearDataGenerator"
+    ],
+    "client": [
+      "org.linear.client.LinearClient"
+    ],
+    "main": [
+      "org.linear.Linear"
+    ]
+  },
+  "mixins": [
+    "linear.mixins.json",
+    {
+      "config": "linear.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
