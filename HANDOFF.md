@@ -297,7 +297,8 @@ StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运�
 修改指引与当前检测值。读取顺序：反射 `ModuleEntryPoint#enabled`（chunkio 与 chunk_serializer
 两个模块，字段均名 enabled，类加载即含默认值语义；ClassNotFound = 模块未分发 = 安全）→
 失败回落自带的极简 TOML 解析（严格小写布尔，非法值返回 null）→ 均失败 fail-closed 拒启。
-解析器 12 项边界测试全过（scratchpad GuardTest）。曾短暂采用 breaks 一刀切（15f6441），
+解析器 12 项边界测试全过（tools/xval/GuardTest.java，验证工具均已入库，用法见
+tools/xval/README.md）。曾短暂采用 breaks 一刀切（15f6441），
 已按用户决定放宽。
 
 **运行时冒烟已完成（2026-07-27，真 C2ME 0.4.2-alpha.0.27 jar 放 run/mods）**：
