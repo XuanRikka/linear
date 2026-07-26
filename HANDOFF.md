@@ -318,8 +318,13 @@ StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运�
    时才 cancel——我们没服务过的 RegionFileStorage 实例（如 C2ME 私建的）回落原版行为，
    反向破坏即消失。
 3. mixin priority 无用：双方注入的类/方法零重叠，不要浪费时间调。
-4. 长期（中等工程）：C2ME 存在时把格式替换下沉到 RegionFile 层（私有 getRegionFile 返回
-   linear 后端的 RegionFile 子类，满足 getChunkInputStream/invokeWriteChunk/delete/
-   getCompressionFormat 语义），linear 格式与 C2ME 优化可同时生效。
+4. ~~长期：RegionFile 层深度集成（replaceImpl=true 下 linear 仍生效）~~
+   **已否决（2026-07-27，用户决定）**。理由：(a) 结构性双重压缩税——C2ME 经
+   invokeWriteChunk 递交的是已 deflate 的 .mca 信封，linear 格式存裸 NBT，必须
+   解开重压，接口层级错配无法绕开；(b) 自研 async-write（写路径 O(1) 入队 +
+   pending map + 后台编码压缩）可从我们自己这层拿到 C2ME chunkio 优化的大部分
+   收益，做完后集成的剩余收益趋零；(c) 绑死原版 RegionFile 私有 API，跨版本
+   维护负债。兼容路线定格：守卫 + 用户在 c2me.toml 关 replaceImpl，
+   性能优化走自研（async-write 列为 v1.1 主项）。
 5. `format=anvil` 的纯 .mca 世界 + C2ME：结果正确（C2ME 自己写 .mca 正是所需），
    我们的 mod 自动让位，C2ME 全部优化保留。
