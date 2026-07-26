@@ -291,11 +291,15 @@ src/main/java/org/linear/
 StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运行时冒烟（加载 linear 世界、
 跨区域移动、存盘重启、确认无 .mca 新增）。
 
-**已实施（2026-07-27）**：一刀切硬守卫——fabric.mod.json `breaks: {"c2me": "*"}`
-（Fabric 启动前弹窗拒绝）+ `Linear.onInitialize()` 运行时兜底抛 IllegalStateException
-（防 loader 参数绕过）。检测到 C2ME 一律拒绝启动，不区分其配置。后续如需放宽为
-"replaceImpl=false 可共存"的精确守卫，撤掉 breaks、把兜底检查改为解析 c2me.toml 即可
-（见下方建议 1/2）。
+**已实施（2026-07-27）**：精确守卫（`Linear.checkC2meCompat()`）——检测到 c2me 后读其
+实际配置：两个危险开关都关（`ioSystem.replaceImpl=false` 且 `gcFreeChunkSerializer=false`）
+→ 打 INFO 放行共存；任一开启 → 抛 IllegalStateException 拒绝启动，错误信息附 c2me.toml
+修改指引与当前检测值。读取顺序：反射 `ModuleEntryPoint#enabled`（chunkio 与 chunk_serializer
+两个模块，字段均名 enabled，类加载即含默认值语义；ClassNotFound = 模块未分发 = 安全）→
+失败回落自带的极简 TOML 解析（严格小写布尔，非法值返回 null）→ 均失败 fail-closed 拒启。
+解析器 12 项边界测试全过（scratchpad GuardTest）。曾短暂采用 breaks 一刀切（15f6441），
+已按用户决定放宽。⚠ 未做装真 C2ME 的运行时冒烟（build C2ME jar 放 mods 验证三态：
+兼容配置放行/危险配置拦截/反射失败回落），发布前建议补。
 
 **其余建议措施（未实施）**：
 1. 启动守卫：检测 c2me 加载且 replaceImpl=true（反射 ModuleEntryPoint#enabled 或解析
