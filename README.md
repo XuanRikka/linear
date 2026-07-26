@@ -11,7 +11,7 @@ anvil（`.mca`），显著减小存档体积。生效范围覆盖 **region / ent
 
 | 格式 | 扩展名 | 出处 | 说明 |
 |---|---|---|---|
-| `bufferedlinearv3`（默认） | `.b_linear` | [Luminol](https://github.com/LuminolMC/Luminol) 服务端 | 16 个 bucket 独立 zstd 压缩，懒加载 + swap 缓冲 + 自动 compact。写入只落 swap，后台线程定期同步主文件，写放大小，适合日常游玩 |
+| `bufferedlinearv3`（默认） | `.b_linear` | [Luminol](https://github.com/LuminolCustomArchive/Luminol) 服务端 | 16 个 bucket 独立 zstd 压缩，懒加载 + swap 缓冲 + 自动 compact。写入只落 swap，后台线程定期同步主文件，写放大小，适合日常游玩 |
 | `linearv2` | `.linear` | [xymb](https://github.com/xymb-endcrystalme/LinearRegionFileFormatTools) | 整文件按 grid 分桶 zstd 压缩，压缩率最高。全内存实现，任何修改都会整文件重写 |
 | `anvil`（别名 `mca`） | `.mca` | Mojang | 原版格式。装着本 mod 也可以继续用原版存储 |
 
@@ -93,8 +93,9 @@ mod 直接读写 `.mca`**。已有 linear 世界的区域会被它当作空白�
 
 - **LinearV2** —— 由 [xymb-endcrystalme/LinearRegionFileFormatTools](https://github.com/xymb-endcrystalme/LinearRegionFileFormatTools)
   设计并实现
-- **BufferedLinearV3** —— 由 [Luminol](https://github.com/LuminolMC/Luminol) 服务端开发，
-  本 mod 的实现移植自其 `BufferedLinearRegionFile`
+- **BufferedLinearV3** —— 由 Luminol 服务端开发，本 mod 的实现移植自其
+  `BufferedLinearRegionFile`。原仓库 `LuminolMC/Luminol` 已删除，可参考存档
+  [LuminolCustomArchive/Luminol](https://github.com/LuminolCustomArchive/Luminol)
 - 压缩使用 [zstd-jni](https://github.com/luben/zstd-jni)
 
 ## 关于本项目的代码
