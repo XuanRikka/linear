@@ -11,21 +11,36 @@
 
 ## 编译与运行（Git Bash，Windows 路径按机器调整）
 
+先 `gradlew build` 一次（harness 直接用 `build/classes/java/main` 和 gradle 缓存里的 jar）。
+
 ```bash
 cd tools/xval
-MC_JAR=$(ls ../../.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-*/26.2/*-26.2.jar | head -1)
-ZSTD_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/com.github.luben -name "zstd-jni-*.jar" | grep -v sources | head -1)
-SLF4J_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/org.slf4j/slf4j-api -name "*.jar" | grep -v sources | sort | tail -1)
-LOADER_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/net.fabricmc/fabric-loader -name "fabric-loader-*.jar" | grep -v sources | head -1)
-DFU_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/com.mojang/datafixerupper -name "*.jar" | sort | tail -1)
-FASTUTIL_JAR=$(find ~/.gradle/caches/modules-2/files-2.1/it.unimi.dsi/fastutil -name "*.jar" | sort | tail -1)
-CP="out;../../build/classes/java/main;$MC_JAR;$ZSTD_JAR;$SLF4J_JAR;$LOADER_JAR;$DFU_JAR;$FASTUTIL_JAR"
+mkdir -p out
+
+# 三个必须遵守的点，否则 classpath 会静默失效（jar 悄悄丢失、报 NoClassDefFoundError）：
+#   1. 全部用绝对路径 —— Git Bash 对含分号的参数做路径转换，混入相对路径会坏掉
+#   2. gradle 缓存路径用 cygpath 转成 C:/ 形式 —— java 认不了 /c/Users/... 这种 POSIX 路径
+#   3. 选版本用 sort -V（版本序）—— 字典序会把 2.0.9 排在 2.0.13 之后、8.0.16 排在 10.0.21 之后
+R=$(cd ../.. && pwd -W)                       # 仓库根，Windows 形式
+M2="$(cygpath -m ~/.gradle)/caches/modules-2/files-2.1"
+pick() { find "$M2/$1" -name "$2" 2>/dev/null | grep -vE "sources|javadoc" | sort -V | tail -1; }
+
+MC_JAR=$(ls "$R"/.gradle/loom-cache/minecraftMaven/net/minecraft/minecraft-common-*/26.2/*-26.2.jar | head -1)
+CP="$R/tools/xval/out;$R/build/classes/java/main;$MC_JAR"
+CP="$CP;$(pick com.github.luben 'zstd-jni-*.jar')"
+CP="$CP;$(pick org.slf4j/slf4j-api '*.jar')"
+CP="$CP;$(pick net.fabricmc/fabric-loader 'fabric-loader-*.jar')"
+CP="$CP;$(pick com.mojang/datafixerupper '*.jar')"
+CP="$CP;$(pick it.unimi.dsi/fastutil '*.jar')"
 
 javac -cp "$CP" -d out Xval.java
 javac -cp "$CP" -d out GuardTest.java   # 注意：属 org.linear 包（访问包私有方法）
-javac -d out ../../src/main/java/org/linear/storage/util/XXHash32.java \
-             ../../src/main/java/org/linear/storage/util/XXHash64.java XXTest.java
+javac -d out "$R"/src/main/java/org/linear/storage/util/XXHash32.java \
+             "$R"/src/main/java/org/linear/storage/util/XXHash64.java XXTest.java
 ```
+
+排查提示：跑起来没有任何输出（连 TOTAL 行都没有）基本就是 classpath 问题——
+去掉 `2>/dev/null` 看真实异常。
 
 ### Xval 命令
 
