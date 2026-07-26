@@ -326,5 +326,9 @@ StorageIoWorker → 5 个公开方法 → 我们完整接管。建议再做运�
    收益，做完后集成的剩余收益趋零；(c) 绑死原版 RegionFile 私有 API，跨版本
    维护负债。兼容路线定格：守卫 + 用户在 c2me.toml 关 replaceImpl，
    性能优化走自研（async-write 列为 v1.1 主项）。
-5. `format=anvil` 的纯 .mca 世界 + C2ME：结果正确（C2ME 自己写 .mca 正是所需），
-   我们的 mod 自动让位，C2ME 全部优化保留。
+5. ~~`format=anvil` 时放行 replaceImpl=true~~ **已否决（2026-07-27，用户决定）**。
+   技术上可行但需三件事（守卫加 format 分支、flush/close 加固、世界级 linear 文件
+   扫描兜底），唯一受益场景是"多世界混用一套 mods"，收益配不上复杂度。
+   规则统一为：装 linear 即必须 `ioSystem.replaceImpl=false`，不区分 format。
+   随之建议 2（flush/close 仅 cache!=null 才 cancel 的加固）也维持未实施——
+   兼容配置下 C2ME 不会私建存储实例，该风险仅存在于守卫已拦截的组合里。
