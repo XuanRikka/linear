@@ -42,6 +42,11 @@ jobs:
       - name: Grant execute permission
         run: chmod +x gradlew
 
+      # gradle.properties 里有本地开发用的代理配置（127.0.0.1:7890），
+      # CI runner 上没有代理，会导致所有下载失败
+      - name: Strip local proxy settings
+        run: sed -i '/^systemProp\.\(http\|https\)\.\(proxyHost\|proxyPort\|nonProxyHosts\)=/d' gradle.properties
+
       - name: Build with Gradle
         run: ./gradlew build --no-daemon
 
